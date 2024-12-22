@@ -19,8 +19,8 @@ An interactive knowledge graph visualization that reveals progressively deeper i
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/eye-tracking-graph.git
-cd eye-tracking-graph
+git clone https://github.com/casepot/eyegraph.git
+cd eyegraph
 ```
 
 2. Start a local server (e.g., using Python):
