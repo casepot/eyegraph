@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Knowledge Graph Eye-Tracking Prototype</title>
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+    }
+    .node {
+      cursor: pointer;
+      stroke: #555;
+      stroke-width: 1.5px;
+    }
+    .node text {
+      pointer-events: none; /* so text doesn't block mouse or gaze events */
+      font-family: sans-serif;
+      font-size: 14px;
+      fill: #333;
+    }
+    .calibration-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      background-color: rgba(255, 255, 255, 0.8);
+      width: 100%;
+      height: 100%;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      z-index: 9999;
+    }
+    .calibration-button {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      padding: 8px 16px;
+      font-size: 14px;
+      cursor: pointer;
+      z-index: 10000;
+    }
+    .calibration-dot {
+      width: 20px;
+      height: 20px;
+      background-color: red;
+      border-radius: 50%;
+      position: absolute;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <!-- Calibration overlay and button -->
+  <button id="startCalibration" class="calibration-button">
+    Start Eye Tracking &amp; Calibration
+  </button>
+  <div id="calibrationOverlay" class="calibration-overlay"></div>
+
+  <!-- Include WebGazer.js from a CDN or your local script -->
+  <script src="https://webgazer.cs.brown.edu/webgazer.js"></script>
+  <!-- Include D3.js -->
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+
+  <script>
+    /********************************************************
+     * 1) Knowledge graph data
+     ********************************************************/
+    const nodesData = [
+      {
+        id: 1,
+        label: "Node A",
+        summary: "Node A Summary: This node explains concept A.",
+        fullDetail:
+          "Full Detail: Node A dives deeper into concept A with all relevant info.",
+        x: 200,
+        y: 200,
+        currentState: 1, // 1 = label, 2 = summary, 3 = full detail
+        gazeStartTime: null, // for eye tracking dwell
+        hoverStartTime: null, // for mouse hover dwell
+      },
+      {
+        id: 2,
+        label: "Node B",
+        summary: "Node B Summary: This node covers concept B.",
+        fullDetail:
+          "Full Detail: Node B dives deeper into concept B with all relevant info.",
+        x: 400,
+        y: 200,
+        currentState: 1,
+        gazeStartTime: null,
+        hoverStartTime: null,
+      },
+    ];
+
+    const linksData = [{ source: 1, target: 2 }];
+
+    // Threshold times (in ms) for eye-gaze or hover
+    // Reduced for quick testing:
+    // - 0–1s => label
+    // - 1–2s => summary
+    // - >2s => full detail
+    const labelThreshold = 1000;
+    const summaryThreshold = 2000;
+
+    /********************************************************
+     * 2) Set up the D3 visualization
+     ********************************************************/
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+
+    const svg = d3
+      .select("body")
+      .append("svg")
+      .attr("width", width)
+      .attr("height", height);
+
+    const simulation = d3
+      .forceSimulation(nodesData)
+      .force("link", d3.forceLink(linksData).id((d) => d.id).distance(150))
+      .force("charge", d3.forceManyBody().strength(-300))
+      .force("center", d3.forceCenter(width / 2, height / 2));
+
+    // Add links
+    const link = svg
+      .selectAll(".link")
+      .data(linksData)
+      .enter()
+      .append("line")
+      .attr("class", "link")
+      .style("stroke", "#999")
+      .style("stroke-opacity", 0.6)
+      .style("stroke-width", 2);
+
+    // Add nodes
+    const node = svg
+      .selectAll(".node")
+      .data(nodesData)
+      .enter()
+      .append("g")
+      .attr("class", "node")
+      .call(
+        d3
+          .drag()
+          .on("start", dragstarted)
+          .on("drag", dragged)
+          .on("end", dragended)
+      );
+
+    // Add circles
+    node
+      .append("circle")
+      .attr("r", 25)
+      .attr("fill", "#66c2a5");
+
+    // Add text
+    node
+      .append("text")
+      .attr("dx", -20)
+      .attr("dy", 4)
+      .text((d) => d.label);
+
+    // Mouse event for fallback (hover dwell)
+    node
+      .on("mouseenter", (event, d) => {
+        d.hoverStartTime = performance.now();
+      })
+      .on("mouseleave", (event, d) => {
+        d.hoverStartTime = null;
+        // Optionally revert to label, or keep the last state:
+        // d.currentState = 1;
+        // updateDisplayedText(d);
+      });
+
+    // Tick updates for D3
+    simulation.on("tick", () => {
+      link
+        .attr("x1", (d) => d.source.x)
+        .attr("y1", (d) => d.source.y)
+        .attr("x2", (d) => d.target.x)
+        .attr("y2", (d) => d.target.y);
+
+      node.attr("transform", (d) => `translate(${d.x},${d.y})`);
+    });
+
+    function dragstarted(event, d) {
+      if (!event.active) simulation.alphaTarget(0.3).restart();
+      d.fx = d.x;
+      d.fy = d.y;
+    }
+
+    function dragged(event, d) {
+      d.fx = event.x;
+      d.fy = event.y;
+    }
+
+    function dragended(event, d) {
+      if (!event.active) simulation.alphaTarget(0);
+      d.fx = null;
+      d.fy = null;
+    }
+
+    /********************************************************
+     * 3) Eye Tracking & Calibration Setup
+     ********************************************************/
+    let gazeX = null;
+    let gazeY = null;
+    let isEyeTrackingOn = false;
+
+    // Basic calibration routine: show a set of red dots, user clicks or looks at them
+    const calibrationOverlay = document.getElementById("calibrationOverlay");
+    const startCalibrationBtn = document.getElementById("startCalibration");
+    let calibrationPoints = [];
+    const totalCalibrationPoints = 5; // we’ll show 5 points
+
+    startCalibrationBtn.addEventListener("click", () => {
+      if (!isEyeTrackingOn) {
+        startCalibration();
+      } else {
+        stopCalibration();
+      }
+    });
+
+    function startCalibration() {
+      isEyeTrackingOn = true;
+      startCalibrationBtn.textContent = "Stop Eye Tracking";
+
+      // Show overlay
+      calibrationOverlay.style.display = "flex";
+
+      // Start WebGazer
+      webgazer
+        .setRegression("ridge")
+        .setTracker("TFFacemesh")
+        .showVideoPreview(true)
+        .showPredictionPoints(false)
+        .showFaceOverlay(false)
+        .begin();
+
+      // Set gaze listener
+      webgazer.setGazeListener((data, elapsedTime) => {
+        if (!data) return;
+        gazeX = data.x;
+        gazeY = data.y;
+      });
+
+      // Create random calibration dots
+      showCalibrationDots();
+    }
+
+    function stopCalibration() {
+      isEyeTrackingOn = false;
+      startCalibrationBtn.textContent = "Start Eye Tracking & Calibration";
+
+      // Hide overlay
+      calibrationOverlay.style.display = "none";
+
+      // End WebGazer session
+      webgazer.end();
+      gazeX = null;
+      gazeY = null;
+    }
+
+    function showCalibrationDots() {
+      // Clear existing
+      calibrationOverlay.innerHTML = "";
+      calibrationPoints = [];
+
+      for (let i = 0; i < totalCalibrationPoints; i++) {
+        const dot = document.createElement("div");
+        dot.classList.add("calibration-dot");
+        // Random positions
+        const x = Math.random() * (window.innerWidth - 40) + 20;
+        const y = Math.random() * (window.innerHeight - 40) + 20;
+        dot.style.left = x + "px";
+        dot.style.top = y + "px";
+        dot.addEventListener("click", () => {
+          // For a simple approach, on click we remove the dot
+          dot.remove();
+          calibrationPoints.push({ x, y });
+          // Once all points are clicked, hide overlay
+          if (calibrationPoints.length === totalCalibrationPoints) {
+            calibrationOverlay.style.display = "none";
+          }
+        });
+        calibrationOverlay.appendChild(dot);
+      }
+    }
+
+    /********************************************************
+     * 4) Periodically check dwell time for both gaze & hover
+     ********************************************************/
+    function checkDwellTimes() {
+      // If not using eye tracking, do nothing here
+      if (isEyeTrackingOn && gazeX !== null && gazeY !== null) {
+        nodesData.forEach((node) => {
+          const dx = gazeX - node.x;
+          const dy = gazeY - node.y;
+          const distance = Math.sqrt(dx * dx + dy * dy);
+
+          // If gaze is inside the circle of radius 25
+          if (distance < 25) {
+            if (node.gazeStartTime === null) {
+              node.gazeStartTime = performance.now();
+            }
+            const dwellTime = performance.now() - node.gazeStartTime;
+            updateNodeState(node, dwellTime);
+          } else {
+            node.gazeStartTime = null;
+            // Optionally revert or keep the last gaze-based state
+            // node.currentState = 1;
+            // updateDisplayedText(node);
+          }
+        });
+      }
+
+      // Mouse hover dwell
+      nodesData.forEach((node) => {
+        if (node.hoverStartTime !== null) {
+          const dwellTime = performance.now() - node.hoverStartTime;
+          updateNodeState(node, dwellTime);
+        }
+      });
+    }
+
+    // Decide which state to show based on dwellTime
+    function updateNodeState(node, dwellTime) {
+      if (dwellTime < labelThreshold) {
+        node.currentState = 1;
+      } else if (dwellTime < summaryThreshold) {
+        node.currentState = 2;
+      } else {
+        node.currentState = 3;
+      }
+      updateDisplayedText(node);
+    }
+
+    function updateDisplayedText(node) {
+      const nodeSelection = svg
+        .selectAll(".node")
+        .filter((d) => d.id === node.id);
+
+      nodeSelection
+        .select("text")
+        .text(() => {
+          if (node.currentState === 1) {
+            return node.label;
+          } else if (node.currentState === 2) {
+            return node.summary;
+          } else {
+            return node.fullDetail;
+          }
+        });
+    }
+
+    // Check dwell times ~10 times/second
+    setInterval(checkDwellTimes, 100);
+
+    // Clean up
+    window.addEventListener("beforeunload", function () {
+      webgazer.end();
+    });
+  </script>
+</body>
+</html>
